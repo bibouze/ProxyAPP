@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Network connection cables and routing paths -->
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M27,54h54"
+        android:strokeWidth="3.5"
+        android:strokeColor="#00E676" />
+    <path
+        android:fillColor="#00BFA5"
+        android:pathData="M54,27v54"
+        android:strokeWidth="3.5"
+        android:strokeColor="#00BFA5" />
+    <!-- Node 1: Left Client -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M27,54m-8,0a8,8 0,1 1,16 0a8,8 0,1 1,-16 0" />
+    <!-- Node 3: Right Public Port -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M81,54m-8,0a8,8 0,1 1,16 0a8,8 0,1 1,-16 0" />
+    <!-- Node 2: Top Server Input -->
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M54,27m-8,0a8,8 0,1 1,16 0a8,8 0,1 1,-16 0" />
+    <!-- Node 4: Bottom Secure Output -->
+    <path
+        android:fillColor="#00BFA5"
+        android:pathData="M54,81m-8,0a8,8 0,1 1,16 0a8,8 0,1 1,-16 0" />
+    <!-- Central Shield hub representing Proxy Authentication Shield -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,44 c-5.52,0 -10,4.48 -10,10 c0,5.52 4.48,10 10,10 s10,-4.48 10,-10 c0,-5.52 -4.48,-10 -10,-10 z M54,61 c-3.86,0 -7,-3.14 -7,-7 s3.14,-7 7,-7 s7,3.14 7,7 s-3.14,7 -7,7 z" />
+</vector>

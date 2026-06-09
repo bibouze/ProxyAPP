@@ -1,0 +1,6 @@
+{
+  "name": "MobileProxy Host",
+  "description": "A high-fidelity SOCKS5 and HTTP/HTTPS proxy server host controller with Live logs, WakeLock settings, and Reverse Tunnel configuration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
