@@ -5,7 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [ProxySettings::class, ProxyLogEntity::class], version = 1, exportSchema = false)
+@Database(entities = [ProxySettings::class, ProxyLogEntity::class], version = 2, exportSchema = false)
 abstract class ProxyDatabase : RoomDatabase() {
     abstract fun proxyDao(): ProxyDao
 

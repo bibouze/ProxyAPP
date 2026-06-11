@@ -36,6 +36,7 @@ fun SettingsScreen(viewModel: ProxyViewModel) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var ipWhitelist by remember { mutableStateOf("") }
+    var disableIpFiltering by remember { mutableStateOf(false) }
     
     // Reverse Tunnel inputs
     var tunnelEnabled by remember { mutableStateOf(false) }
@@ -59,6 +60,7 @@ fun SettingsScreen(viewModel: ProxyViewModel) {
         username = currentSettings.username
         password = currentSettings.password
         ipWhitelist = currentSettings.ipWhitelist
+        disableIpFiltering = currentSettings.disableIpFiltering
         tunnelEnabled = currentSettings.reverseTunnelEnabled
         vpsAddress = currentSettings.vpsAddress
         vpsSecret = currentSettings.vpsSecret
@@ -172,6 +174,33 @@ fun SettingsScreen(viewModel: ProxyViewModel) {
                     singleLine = true,
                     colors = textFieldColors
                 )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Désactiver le filtrage d'IP (Autoriser toutes les connexions)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Le proxy ignorera le champ 'IPs Autorisées' et laissera passer toutes les requêtes",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF919196)
+                        )
+                    }
+                    Switch(
+                        checked = disableIpFiltering,
+                        onCheckedChange = { disableIpFiltering = it },
+                        colors = customSwitchColors
+                    )
+                }
             }
         }
 
@@ -482,7 +511,8 @@ fun SettingsScreen(viewModel: ProxyViewModel) {
                     remotePort = remoteVal,
                     wifiLockEnabled = wifiLockEnabled,
                     wakeLockEnabled = wakeLockEnabled,
-                    autoRestartOnNetworkChange = autoRestart
+                    autoRestartOnNetworkChange = autoRestart,
+                    disableIpFiltering = disableIpFiltering
                 )
                 viewModel.updateSettings(finalSettings)
             },

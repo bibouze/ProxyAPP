@@ -15,24 +15,63 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.example.MainActivity
 import com.example.proxy.ProxyViewModel
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
 
+private fun android.content.Context.findActivity(): MainActivity? {
+    var c = this
+    while (c is android.content.ContextWrapper) {
+        if (c is MainActivity) return c
+        c = c.baseContext
+    }
+    return null
+}
+
 @Composable
 fun DashboardScreen(viewModel: ProxyViewModel) {
+    val context = LocalContext.current
+    val mainActivity = remember(context) { context.findActivity() }
+    
+    var hasNotifications by remember { 
+        mutableStateOf(mainActivity?.isNotificationPermissionGranted() ?: true) 
+    }
+    var hasBatteryOptimization by remember { 
+        mutableStateOf(mainActivity?.isBatteryOptimizationIgnored() ?: true) 
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, mainActivity) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasNotifications = mainActivity?.isNotificationPermissionGranted() ?: true
+                hasBatteryOptimization = mainActivity?.isBatteryOptimizationIgnored() ?: true
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     val isRunning by viewModel.isRunning.collectAsState()
     val activeConns by viewModel.activeConnections.collectAsState()
     val upRate by viewModel.uploadRate.collectAsState()
@@ -77,6 +116,77 @@ fun DashboardScreen(viewModel: ProxyViewModel) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Permissions banner if notifications or battery optimizations are not granted
+        if (!hasNotifications || !hasBatteryOptimization) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF2C251C)), // Muted amber dark tone
+                border = BorderStroke(1.dp, Color(0xFFFFB74D)) // Amber border
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = "Attention",
+                            tint = Color(0xFFFFB74D),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Optimisation en Arrière-plan",
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFFFB74D),
+                            fontSize = 14.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Pour que l'application reste active même fermée et continue d'héberger le proxy, accordez toutes les autorisations ci-dessous.",
+                        color = Color(0xFFE2E2E6),
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (!hasNotifications) {
+                            Button(
+                                onClick = { mainActivity?.requestNotificationPermission() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF4D3812),
+                                    contentColor = Color(0xFFFFB74D)
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier.weight(1.3f)
+                            ) {
+                                Text("Notifications", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        if (!hasBatteryOptimization) {
+                            Button(
+                                onClick = { mainActivity?.requestIgnoreBatteryOptimizations() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFFFB74D),
+                                    contentColor = Color(0xFF2C251C)
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier.weight(1.5f)
+                            ) {
+                                Text("Ignorer Optimisation Batterie", fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // 1. MASTER CONTROL TOGGLE PANEL (Active: D0BCFF Purple, Inactive: 1C1F26 Dark slate)
         val masterBg = if (isRunning) Color(0xFFD0BCFF) else Color(0xFF1C1F26)
         val masterContentColor = if (isRunning) Color(0xFF381E72) else Color(0xFFE2E2E6)
@@ -383,6 +493,21 @@ fun DashboardScreen(viewModel: ProxyViewModel) {
                     ) {
                         latestLogs.forEach { log ->
                             val timeStr = timeFormat.format(Date(log.timestamp))
+                            val isSystem = log.protocol.uppercase() == "SYSTEM"
+                            val isError = if (isSystem) {
+                                log.status.contains("Erreur", ignoreCase = true) || 
+                                log.status.contains("Échec", ignoreCase = true) || 
+                                log.status.contains("Error", ignoreCase = true) || 
+                                log.status.contains("Failed", ignoreCase = true)
+                            } else {
+                                log.status.startsWith("ERREUR") || 
+                                log.status.startsWith("ÉCHEC") || 
+                                log.status.startsWith("REJETÉ") || 
+                                log.status.contains("ERROR", ignoreCase = true) || 
+                                log.status.contains("FAILED", ignoreCase = true)
+                            }
+                            val destColor = if (isError) Color(0xFFEF5350) else Color(0xFFA8AAAD)
+                            val protoColor = if (isError) Color(0xFFEF5350) else Color.White
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -396,22 +521,23 @@ fun DashboardScreen(viewModel: ProxyViewModel) {
                                     text = "[$timeStr]",
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp,
-                                    color = Color(0xFFD0BCFF),
+                                    color = if (isError) Color(0xFFEF5350) else Color(0xFFD0BCFF),
                                     fontWeight = FontWeight.Medium
                                 )
                                 Text(
                                     text = log.protocol,
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp,
-                                    color = Color.White,
+                                    color = protoColor,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    text = "➔ ${log.destination}",
+                                    text = if (isError) "➔ ! ${log.destination}" else "➔ ${log.destination}",
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp,
-                                    color = Color(0xFFA8AAAD),
+                                    color = destColor,
                                     maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f)
                                 )
                             }

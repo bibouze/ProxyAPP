@@ -18,5 +18,6 @@ data class ProxySettings(
     val remotePort: Int = 10080,
     val wifiLockEnabled: Boolean = true,
     val wakeLockEnabled: Boolean = true,
-    val autoRestartOnNetworkChange: Boolean = true
+    val autoRestartOnNetworkChange: Boolean = true,
+    val disableIpFiltering: Boolean = false
 )

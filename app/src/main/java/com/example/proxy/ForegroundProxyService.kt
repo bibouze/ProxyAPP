@@ -31,10 +31,12 @@ class ForegroundProxyService : Service() {
         const val ACTION_STOP = "ACTION_STOP"
     }
 
+    private var isServiceStarted = false
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var lastKnownIp: String = "N/A"
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
@@ -49,12 +51,19 @@ class ForegroundProxyService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.d(TAG, "onStartCommand reçu avec action: ${intent?.action}")
         when (intent?.action) {
             ACTION_START -> {
-                startServiceForeground()
-                startProxyServer()
+                if (!isServiceStarted) {
+                    isServiceStarted = true
+                    startServiceForeground()
+                    startProxyServer()
+                } else {
+                    Log.d(TAG, "Le service ForegroundProxyService est déjà démarré. Ignoré.")
+                }
             }
             ACTION_STOP -> {
+                isServiceStarted = false
                 stopProxyServer()
                 stopSelf()
             }
@@ -80,31 +89,55 @@ class ForegroundProxyService : Service() {
             val settings = repository.getSettings()
 
             // 1. Acquire CPU WakeLock
-            if (settings.wakeLockEnabled && wakeLock == null) {
-                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-                wakeLock = powerManager.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK,
-                    "MobileProxyHost::WakeLock"
-                ).apply {
-                    acquire()
+            if (settings.wakeLockEnabled && isWakeLockAllowed()) {
+                withContext(Dispatchers.Main) {
+                    if (!isServiceStarted) return@withContext
+                    if (wakeLock == null) {
+                        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                        try {
+                            wakeLock = powerManager.newWakeLock(
+                                PowerManager.PARTIAL_WAKE_LOCK,
+                                "MobileProxyHost::WakeLock"
+                            ).apply {
+                                setReferenceCounted(false)
+                                acquire()
+                            }
+                            Log.d(TAG, "WakeLock acquired successfully on Main thread")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Erreur lors de l'acquisition du CPU WakeLock", e)
+                        }
+                    }
                 }
-                Log.d(TAG, "WakeLock acquired")
+            } else if (settings.wakeLockEnabled) {
+                Log.d(TAG, "Acquisition du CPU WakeLock ignorée car l'AppOp WAKE_LOCK est restreint/ignoré.")
             }
 
             // 2. Acquire Wi-Fi Lock
-            if (settings.wifiLockEnabled && wifiLock == null) {
-                val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                wifiLock = wifiManager.createWifiLock(
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        WifiManager.WIFI_MODE_FULL_HIGH_PERF
-                    } else {
-                        WifiManager.WIFI_MODE_FULL
-                    },
-                    "MobileProxyHost::WifiLock"
-                ).apply {
-                    acquire()
+            if (settings.wifiLockEnabled && isWakeLockAllowed()) {
+                withContext(Dispatchers.Main) {
+                    if (!isServiceStarted) return@withContext
+                    if (wifiLock == null) {
+                        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                        try {
+                            wifiLock = wifiManager.createWifiLock(
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                                } else {
+                                    WifiManager.WIFI_MODE_FULL
+                                },
+                                "MobileProxyHost::WifiLock"
+                            ).apply {
+                                setReferenceCounted(false)
+                                acquire()
+                            }
+                            Log.d(TAG, "Wi-Fi Lock acquired successfully on Main thread")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Erreur lors de l'acquisition du Wi-Fi Lock", e)
+                        }
+                    }
                 }
-                Log.d(TAG, "Wi-Fi Lock acquired")
+            } else if (settings.wifiLockEnabled) {
+                Log.d(TAG, "Acquisition du Wi-Fi Lock ignorée car l'AppOp WAKE_LOCK est restreint/ignoré.")
             }
 
             // 3. Start proxy servers inside the singleton engine
@@ -135,19 +168,29 @@ class ForegroundProxyService : Service() {
     private fun stopProxyServer() {
         ProxyEngine.stop(repository)
 
-        // Release WakeLocks
+        // Release WakeLocks synchronously (since stopProxyServer is always called on the Main thread)
         try {
             wakeLock?.let {
-                if (it.isHeld) it.release()
+                if (it.isHeld) {
+                    it.release()
+                    Log.d(TAG, "WakeLock released successfully on Main thread")
+                }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.e(TAG, "Erreur lors du relâchement du CPU WakeLock on Main thread", e)
+        }
         wakeLock = null
 
         try {
             wifiLock?.let {
-                if (it.isHeld) it.release()
+                if (it.isHeld) {
+                    it.release()
+                    Log.d(TAG, "Wi-Fi Lock released successfully on Main thread")
+                }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.e(TAG, "Erreur lors du relâchement du Wi-Fi Lock on Main thread", e)
+        }
         wifiLock = null
 
         // Unregister Network Callback
@@ -164,24 +207,32 @@ class ForegroundProxyService : Service() {
     }
 
     private fun registerNetworkMonitor(autoRestart: Boolean) {
+        lastKnownIp = getLocalIpAddress()
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 val ip = getLocalIpAddress()
                 serviceScope.launch {
-                    repository.insertSystemLog("[RESEAU] Changement de réseau détecté. IP locale actuelle : $ip")
-                    if (autoRestart) {
-                        Log.d(TAG, "Dynamic IP changed. Reloading ProxyEngine ports...")
-                        ProxyEngine.stop(repository)
-                        delay(500)
-                        ProxyEngine.start(this@ForegroundProxyService, repository)
+                    if (ip != "N/A" && ip != "127.0.0.1" && ip != lastKnownIp) {
+                        val oldIp = lastKnownIp
+                        lastKnownIp = ip
+                        repository.insertSystemLog("[RESEAU] Changement de réseau détecté. IP locale modifiée de $oldIp à $ip.")
+                        if (autoRestart) {
+                            Log.d(TAG, "Dynamic IP changed from $oldIp to $ip. Restarting ProxyEngine silently...")
+                            ProxyEngine.stop(repository)
+                            delay(1000)
+                            ProxyEngine.start(this@ForegroundProxyService, repository)
+                            repository.insertSystemLog("[SYSTEM] Serveurs Proxy redémarrés automatiquement à la volée avec la nouvelle IP : $ip")
+                        }
+                    } else {
+                        repository.insertSystemLog("[RESEAU] Variation réseau ou micro-coupure détectée sans changement d'IP locale active ($ip). Les sockets en attente restent actifs de manière résiliente.")
                     }
                 }
             }
 
             override fun onLost(network: Network) {
                 serviceScope.launch {
-                    repository.insertSystemLog("[RESEAU] Perte de connexion réseau mobile / Wi-Fi.")
+                    repository.insertSystemLog("[RESEAU] Perte temporaire ou fluctuation de connexion signalée. Maintien des sockets en attente de manière résiliente.")
                 }
             }
         }
@@ -249,6 +300,60 @@ class ForegroundProxyService : Service() {
             bytes >= 1 shl 20 -> String.format("%.2f Mo", bytes.toDouble() / (1 shl 20))
             bytes >= 1 shl 10 -> String.format("%.2f Ko", bytes.toDouble() / (1 shl 10))
             else -> "$bytes o"
+        }
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.d(TAG, "Application fermée/supprimée des récents. Maintien du service active.")
+        
+        serviceScope.launch {
+            repository.insertSystemLog("[SYSTEM] Application écartée des récents. Les serveurs de routage Proxy restent actifs en arrière-plan.")
+        }
+
+        // Restart service immediately via AlarmManager to ensure persistence
+        val restartIntent = Intent(applicationContext, ForegroundProxyService::class.java).apply {
+            action = ACTION_START
+        }
+        try {
+            val pendingIntent = PendingIntent.getService(
+                this,
+                99,
+                restartIntent,
+                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            alarmManager.set(
+                AlarmManager.RTC_WAKEUP,
+                System.currentTimeMillis() + 1000,
+                pendingIntent
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Impossible de planifier le redémarrage par l'AlarmManager", e)
+        }
+        
+        super.onTaskRemoved(rootIntent)
+    }
+
+    private fun isWakeLockAllowed(): Boolean {
+        val appOps = getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager ?: return true
+        return try {
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOps.unsafeCheckOpNoThrow(
+                    "android:wake_lock",
+                    android.os.Process.myUid(),
+                    packageName
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow(
+                    "android:wake_lock",
+                    android.os.Process.myUid(),
+                    packageName
+                )
+            }
+            mode != AppOpsManager.MODE_IGNORED && mode != AppOpsManager.MODE_ERRORED
+        } catch (e: Exception) {
+            true
         }
     }
 

@@ -17,9 +17,42 @@ import java.net.SocketException
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.net.NetworkInterface
+import java.net.Inet4Address
+import okhttp3.OkHttpClient
+import okhttp3.Request
 
 object ProxyEngine {
     private const val TAG = "ProxyEngine"
+
+    private val httpClient by lazy {
+        OkHttpClient.Builder()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .connectTimeout(java.time.Duration.ofSeconds(10))
+            .readTimeout(java.time.Duration.ofSeconds(10))
+            .build()
+    }
+
+    fun getLocalIpAddress(): String? {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val networkInterface = interfaces.nextElement()
+                if (networkInterface.isLoopback || !networkInterface.isUp) continue
+                val addresses = networkInterface.inetAddresses
+                while (addresses.hasMoreElements()) {
+                    val address = addresses.nextElement()
+                    if (address is Inet4Address && !address.isLoopbackAddress) {
+                        return address.hostAddress
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting local IP address", e)
+        }
+        return null
+    }
 
     private var scope: CoroutineScope? = null
     private var httpJob: Job? = null
@@ -70,6 +103,9 @@ object ProxyEngine {
             try {
                 val settings = repository.getSettings()
                 repository.insertSystemLog("Démarrage des serveurs Proxy...")
+
+                val localIp = getLocalIpAddress() ?: "127.0.0.1"
+                repository.insertSystemLog("Serveur actif sur $localIp (HTTP: ${settings.httpPort}, SOCKS5: ${settings.socksPort})")
 
                 // Start HTTP Server
                 startHttpServer(settings, repository, newScope)
@@ -212,9 +248,97 @@ object ProxyEngine {
             val method = parts[0]
             val urlOrTarget = parts[1]
 
-            // Check Whitelist IP before authenticating
             val clientIp = client.inetAddress?.hostAddress ?: "Inconnu"
-            if (settings.ipWhitelist.trim().isNotEmpty()) {
+
+            // 1. Check for Roblox-style API bypass requests and process directly
+            val isBypassRequest = urlOrTarget.contains("bypass?url=", ignoreCase = true)
+            if (isBypassRequest) {
+                val urlParamIndex = urlOrTarget.indexOf("bypass?url=", ignoreCase = true)
+                val rawUrl = urlOrTarget.substring(urlParamIndex + "bypass?url=".length)
+                val decodedUrl = try {
+                    java.net.URLDecoder.decode(rawUrl, "UTF-8")
+                } catch (_: Exception) {
+                    rawUrl
+                }
+
+                if (!decodedUrl.startsWith("http://") && !decodedUrl.startsWith("https://")) {
+                    writeHttpResponse(output, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nURL de bypass invalide")
+                    closeQuietly(client)
+                    return
+                }
+
+                repository.insertLog(
+                    ProxyLogEntity(
+                        protocol = "HTTP-BYPASS",
+                        clientIp = clientIp,
+                        destination = decodedUrl,
+                        action = method,
+                        status = "RELAI BYPASS DIRECT"
+                    )
+                )
+
+                try {
+                    val reqBuilder = Request.Builder().url(decodedUrl)
+                    for (line in lines) {
+                        val colonIndex = line.indexOf(':')
+                        if (colonIndex != -1) {
+                            val name = line.substring(0, colonIndex).trim()
+                            val value = line.substring(colonIndex + 1).trim()
+                            if (!name.equals("Host", ignoreCase = true) &&
+                                !name.equals("Proxy-Authorization", ignoreCase = true) &&
+                                !name.equals("Proxy-Connection", ignoreCase = true) &&
+                                !name.equals("Connection", ignoreCase = true)
+                            ) {
+                                try {
+                                    reqBuilder.header(name, value)
+                                } catch (_: Exception) {}
+                            }
+                        }
+                    }
+
+                    val request = reqBuilder.build()
+                    httpClient.newCall(request).execute().use { response ->
+                        val statusLine = "HTTP/1.1 ${response.code} ${response.message}\r\n"
+                        output.write(statusLine.toByteArray(StandardCharsets.UTF_8))
+
+                        for ((name, value) in response.headers) {
+                            output.write("$name: $value\r\n".toByteArray(StandardCharsets.UTF_8))
+                        }
+                        output.write("\r\n".toByteArray())
+                        output.flush()
+
+                        val bodyStream = response.body?.byteStream()
+                        if (bodyStream != null) {
+                            val buffer = ByteArray(8192)
+                            var read: Int
+                            var totalBytes = 0L
+                            while (bodyStream.read(buffer).also { read = it } != -1) {
+                                output.write(buffer, 0, read)
+                                totalBytes += read
+                            }
+                            output.flush()
+                            _totalDownloadedBytes.value += totalBytes
+                        }
+                    }
+                } catch (e: Exception) {
+                    repository.insertLog(
+                        ProxyLogEntity(
+                            protocol = "HTTP-BYPASS",
+                            clientIp = clientIp,
+                            destination = decodedUrl,
+                            action = method,
+                            status = "ÉCHEC BYPASS: ${e.localizedMessage}"
+                        )
+                    )
+                    writeHttpResponse(output, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\nErreur lors du bypass: ${e.localizedMessage}")
+                } finally {
+                    closeQuietly(client)
+                }
+                return
+            }
+
+            // Check Whitelist IP before authenticating
+            if (!settings.disableIpFiltering && settings.ipWhitelist.trim().isNotEmpty()) {
                 val allowedIps = settings.ipWhitelist.split(",").map { it.trim() }
                 if (!allowedIps.contains(clientIp)) {
                     repository.insertLog(
@@ -443,7 +567,7 @@ object ProxyEngine {
             val clientIp = client.inetAddress?.hostAddress ?: "Inconnu"
 
             // Check IP Whitelist
-            if (settings.ipWhitelist.trim().isNotEmpty()) {
+            if (!settings.disableIpFiltering && settings.ipWhitelist.trim().isNotEmpty()) {
                 val allowedIps = settings.ipWhitelist.split(",").map { it.trim() }
                 if (!allowedIps.contains(clientIp)) {
                     repository.insertLog(
