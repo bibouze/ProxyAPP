@@ -4,6 +4,7 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -211,23 +212,16 @@ class ForegroundProxyService : Service() {
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                val ip = getLocalIpAddress()
-                serviceScope.launch {
-                    if (ip != "N/A" && ip != "127.0.0.1" && ip != lastKnownIp) {
-                        val oldIp = lastKnownIp
-                        lastKnownIp = ip
-                        repository.insertSystemLog("[RESEAU] Changement de réseau détecté. IP locale modifiée de $oldIp à $ip.")
-                        if (autoRestart) {
-                            Log.d(TAG, "Dynamic IP changed from $oldIp to $ip. Restarting ProxyEngine silently...")
-                            ProxyEngine.stop(repository)
-                            delay(1000)
-                            ProxyEngine.start(this@ForegroundProxyService, repository)
-                            repository.insertSystemLog("[SYSTEM] Serveurs Proxy redémarrés automatiquement à la volée avec la nouvelle IP : $ip")
-                        }
-                    } else {
-                        repository.insertSystemLog("[RESEAU] Variation réseau ou micro-coupure détectée sans changement d'IP locale active ($ip). Les sockets en attente restent actifs de manière résiliente.")
-                    }
-                }
+                handleIpChangeCheck("onAvailable", autoRestart)
+            }
+
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                handleIpChangeCheck("onLinkPropertiesChanged", autoRestart)
+            }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                // Ignore signals, wifi channel or band modifications to avoid disconnect loops
+                Log.d(TAG, "onCapabilitiesChanged reçue. Changement de signal ignoré pour garantir une stabilité maximale.")
             }
 
             override fun onLost(network: Network) {
@@ -241,6 +235,26 @@ class ForegroundProxyService : Service() {
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
         connectivityManager?.registerNetworkCallback(request, networkCallback!!)
+    }
+
+    private fun handleIpChangeCheck(triggerSource: String, autoRestart: Boolean) {
+        val ip = getLocalIpAddress()
+        serviceScope.launch {
+            if (ip != "N/A" && ip != "127.0.0.1" && ip != lastKnownIp) {
+                val oldIp = lastKnownIp
+                lastKnownIp = ip
+                repository.insertSystemLog("[RESEAU] Changement d'IP locale IPv4 détecté par $triggerSource. IP passée de $oldIp à $ip.")
+                if (autoRestart) {
+                    Log.d(TAG, "Dynamic IP changed from $oldIp to $ip via $triggerSource. Restarting ProxyEngine silently...")
+                    ProxyEngine.stop(repository)
+                    delay(1000)
+                    ProxyEngine.start(this@ForegroundProxyService, repository)
+                    repository.insertSystemLog("[SYSTEM] Serveurs Proxy redémarrés automatiquement à la volée avec la nouvelle IP : $ip")
+                }
+            } else {
+                Log.d(TAG, "Événement réseau de type $triggerSource détecté. IP locale inchangée ($ip). Maintien des sockets en attente de manière résiliente.")
+            }
+        }
     }
 
     private fun createNotificationChannel() {
